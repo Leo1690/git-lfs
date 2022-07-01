@@ -77,6 +77,14 @@ func (f *GitFilter) Smudge(writer io.Writer, ptr *Pointer, workingfile string, d
 	} else if statErr != nil || stat == nil {
 		if download {
 			n, err = f.downloadFile(writer, ptr, workingfile, mediafile, manifest, cb)
+
+			// In case of a cherry-pick the newly created commit is likely not yet
+			// be found in the history of a remote branch. Thus, the first attempt might fail.
+			if err != nil {
+				tracerx.Printf("Default remote failed. Searching alternate remotes")
+				n, err = f.downloadFileFallBack(writer, ptr, workingfile, mediafile, manifest, cb)
+			}
+
 		} else {
 			return 0, errors.NewDownloadDeclinedError(statErr, tr.Tr.Get("smudge filter"))
 		}
@@ -121,6 +129,39 @@ func (f *GitFilter) downloadFile(writer io.Writer, ptr *Pointer, workingfile, me
 	}
 
 	return f.readLocalFile(writer, ptr, mediafile, workingfile, nil)
+}
+
+func (f *GitFilter) downloadFileFallBack(writer io.Writer, ptr *Pointer, workingfile, mediafile string, manifest *tq.Manifest, cb tools.CopyCallback) (int64, error) {
+	// attempt to find the LFS objects in all currently registered remotes
+	remotes := f.cfg.Remotes()
+	for index, remote := range remotes {
+		q := tq.NewTransferQueue(tq.Download, manifest, remote,
+			tq.WithProgressCallback(cb),
+			tq.RemoteRef(f.RemoteRef()),
+		)
+		q.Add(filepath.Base(workingfile), mediafile, ptr.Oid, ptr.Size, false, nil)
+		q.Wait()
+
+		if errs := q.Errors(); len(errs) > 0 {
+			var multiErr error
+			for _, e := range errs {
+				if multiErr != nil {
+					multiErr = fmt.Errorf("%v\n%v", multiErr, e)
+				} else {
+					multiErr = e
+				}
+			}
+			wrappedError := errors.Wrapf(multiErr, tr.Tr.Get("Error downloading %s (%s)", workingfile, ptr.Oid))
+			if index >= len(remotes)-1 {
+				return 0, wrappedError
+			} else {
+				tracerx.Printf("Remote failed %s %s", remote, wrappedError)
+			}
+		} else {
+			return f.readLocalFile(writer, ptr, mediafile, workingfile, nil)
+		}
+	}
+	return 0, errors.Wrapf(errors.New("No known remotes"), tr.Tr.Get("Error downloading %s (%s)", workingfile, ptr.Oid))
 }
 
 func (f *GitFilter) readLocalFile(writer io.Writer, ptr *Pointer, mediafile string, workingfile string, cb tools.CopyCallback) (int64, error) {
