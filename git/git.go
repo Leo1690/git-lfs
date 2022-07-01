@@ -1481,3 +1481,85 @@ func ObjectDatabase(osEnv, gitEnv Environment, gitdir, tempdir string) (*gitobj.
 	}
 	return odb, nil
 }
+
+func remotesForTreeish(treeish string) []string {
+	var outp string
+	var err error
+	if treeish == "" {
+		//Treeish is empty for sparse checkout
+		tracerx.Printf("Git Treeish not provided")
+		outp, err = gitNoLFSSimple("name-rev", "HEAD", "--name-only")
+	} else {
+		tracerx.Printf("Git Treeish %s", treeish)
+		outp, err = gitNoLFSSimple("name-rev", treeish, "--name-only")
+	}
+	if err != nil || outp == "" {
+		tracerx.Printf("Git can't resolve symbolic name for ref: %q", treeish)
+		return []string{}
+	}
+	return strings.Split(outp, "\n")
+}
+
+// remoteForRef will try to determine the remote from the ref name.
+// This will return an empty string if any of the remote names have a slash
+// because slashes introduce ambiguity. Consider two refs:
+//
+// 1. upstream/main
+// 2. upstream/test/main
+//
+// Is the remote "upstream" or "upstream/test"? It could be either, or both.
+// We could use git for-each-ref with %(upstream:remotename) if there were a tracking branch,
+// but this is not guaranteed to exist either.
+func remoteForRef(refname string) string {
+	tracerx.Printf("Git Working Ref %", refname)
+	remotes, err := RemoteList()
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(refname, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	for _, name := range remotes {
+		if strings.Contains(name, "/") {
+			tracerx.Printf("cannot determine remote for ref %s since remote contains a slash", refname, name)
+			return ""
+		}
+	}
+	remote := parts[0]
+	tracerx.Printf("Git Working Remote %", remote)
+	return remote
+}
+
+// Get the type & name of a git reference
+func ParseRemote(fullref string) (name string) {
+	const remotePrefix = "remotes/"
+	if strings.HasPrefix(fullref, remotePrefix) {
+		name = fullref[len(remotePrefix):]
+	} else {
+		name = ""
+	}
+	return
+}
+
+func ParseRemotes(refs []string) string {
+	var name string
+	for _, ref := range refs {
+		name = ParseRemote(ref)
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// FirstRemoteForTreeish remotes the first remote that contains the commit
+// in treeish.
+func FirstRemoteForTreeish(treeish string) string {
+	name := ParseRemotes(remotesForTreeish(treeish))
+	if name == "" {
+		tracerx.Printf("No valid remote refs parsed: %q", treeish)
+		return ""
+	}
+	return remoteForRef(name)
+}

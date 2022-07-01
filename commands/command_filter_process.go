@@ -95,6 +95,12 @@ func filterCommand(cmd *cobra.Command, args []string) {
 				closeOnce = new(sync.Once)
 				available = make(chan *tq.Transfer)
 
+				//Update current remote with treeish
+				newRemote := git.FirstRemoteForTreeish(req.Header["treeish"])
+				if newRemote != "" {
+					cfg.SetRemote(newRemote)
+				}
+
 				q = tq.NewTransferQueue(
 					tq.Download,
 					getTransferManifestOperationRemote("download", cfg.Remote()),
